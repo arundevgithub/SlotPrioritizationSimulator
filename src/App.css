@@ -354,8 +354,8 @@
 }
 
 .priority-order-info {
-  max-width: 1400px;
-  margin: 0 auto;
+  max-width: 100%;
+  margin: 0 auto 30px;
   background: white;
   border-radius: 12px;
   padding: 20px;
