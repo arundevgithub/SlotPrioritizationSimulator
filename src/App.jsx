@@ -44,6 +44,7 @@ function App() {
   const [isPaused, setIsPaused] = useState(false)
   const timeSlots = useMemo(() => generateTimeSlots(), [])
   const simulationIntervalRef = useRef(null)
+  const simulationInProgressRef = useRef(false)
   
   // Sort providers by license count (ascending - fewer licenses first)
   const sortedProviders = useMemo(() => {
@@ -63,6 +64,17 @@ function App() {
   // Calculate total selected slots for a provider
   const getTotalSelectedSlots = (providerId) => {
     return Object.values(selectedSlots[providerId] || {}).filter(Boolean).length
+  }
+
+  // Truncate a number to 2 decimal places (for display)
+  const truncateToTwoDecimals = (num) => {
+    return Math.floor(num * 100) / 100
+  }
+
+  // Format truncated number to 2 decimal places string
+  const formatTruncatedScore = (num) => {
+    const truncated = truncateToTwoDecimals(num)
+    return truncated.toFixed(2)
   }
 
   // Calculate availability score: y = 0.8x + 0.2e^(-1.2(b-1))
@@ -109,7 +121,7 @@ function App() {
     
     const providerScores = availableProviders.map(provider => {
       const rawScore = calculateAvailabilityScore(provider.id, provider.licenses)
-      const roundedScore = Math.round(rawScore * 100) / 100 // Round to 2 decimal places
+      const roundedScore = Math.floor(rawScore * 100) / 100 // Truncate to 2 decimal places
       return {
         id: provider.id,
         score: roundedScore,
@@ -132,12 +144,12 @@ function App() {
     return sortedTiedProviders[randomIndex].id
   }
 
-  // Get all available (highlighted) slots sorted by time
-  // This is a helper that calculates available slots given a state snapshot
-  const getAvailableSlotsForState = useCallback((currentSelectedSlots) => {
-    const availableSlots = []
+  // Get all currently highlighted slots (using the same logic as rendering)
+  // This ensures simulation only selects from actually highlighted slots
+  const getHighlightedSlots = useCallback((currentSelectedSlots) => {
+    const highlightedSlots = []
     timeSlots.forEach((slot) => {
-      // Calculate max score provider for this slot with given state
+      // Use the same logic as getMaxScoreProviderForSlot but with state snapshot
       const availableProviders = sortedProviders.filter(provider => 
         !currentSelectedSlots[provider.id]?.[slot.id]
       )
@@ -151,7 +163,7 @@ function App() {
         const x = slotsRemaining / totalSlots
         const exponentialTerm = 0.2 * Math.exp(-1.2 * (provider.licenses - 1))
         const rawScore = 0.8 * x + exponentialTerm
-        const roundedScore = Math.round(rawScore * 100) / 100
+        const roundedScore = Math.floor(rawScore * 100) / 100 // Truncate to 2 decimal places (match getMaxScoreProviderForSlot)
         return { id: provider.id, score: roundedScore }
       })
       
@@ -167,97 +179,253 @@ function App() {
         selectedProviderId = sortedTied[slotHash % sortedTied.length].id
       }
       
-      availableSlots.push({
+      highlightedSlots.push({
         slotId: slot.id,
         providerId: selectedProviderId,
         timeIndex: timeSlots.findIndex(s => s.id === slot.id)
       })
     })
-    return availableSlots.sort((a, b) => a.timeIndex - b.timeIndex)
+    return highlightedSlots.sort((a, b) => a.timeIndex - b.timeIndex)
   }, [timeSlots, sortedProviders])
+
+  // Helper function to get highlighted slots from current state
+  const getCurrentHighlightedSlots = () => {
+    const highlightedSlots = []
+    timeSlots.forEach((slot) => {
+      const maxScoreProviderId = getMaxScoreProviderForSlot(slot.id)
+      if (maxScoreProviderId !== null) {
+        highlightedSlots.push({
+          slotId: slot.id,
+          providerId: maxScoreProviderId,
+          timeIndex: timeSlots.findIndex(s => s.id === slot.id)
+        })
+      }
+    })
+    return highlightedSlots.sort((a, b) => a.timeIndex - b.timeIndex)
+  }
+
+  // Calculate availability score with state snapshot (for simulation)
+  const calculateAvailabilityScoreWithState = (providerId, licenses, stateSnapshot) => {
+    if (licenses === 0) return Infinity
+    const totalSlots = timeSlots.length
+    const selectedCount = Object.values(stateSnapshot[provider.id] || {}).filter(Boolean).length
+    const slotsRemaining = totalSlots - selectedCount
+    const x = slotsRemaining / totalSlots
+    const exponentialTerm = 0.2 * Math.exp(-1.2 * (licenses - 1))
+    return 0.8 * x + exponentialTerm
+  }
+
+  // Get highlighted provider for a slot with state snapshot (for simulation)
+  const getMaxScoreProviderForSlotWithState = (slotId, stateSnapshot) => {
+    const availableProviders = sortedProviders.filter(provider => 
+      !stateSnapshot[provider.id]?.[slotId]
+    )
+    
+    if (availableProviders.length === 0) {
+      return null
+    }
+    
+    const providerScores = availableProviders.map(provider => {
+      const rawScore = calculateAvailabilityScoreWithState(provider.id, provider.licenses, stateSnapshot)
+      const roundedScore = Math.floor(rawScore * 100) / 100
+      return { id: provider.id, score: roundedScore }
+    })
+    
+    const maxScore = Math.max(...providerScores.map(p => p.score))
+    const maxScoreProviders = providerScores.filter(p => p.score === maxScore)
+    
+    if (maxScoreProviders.length === 1) {
+      return maxScoreProviders[0].id
+    }
+    
+    const sortedTiedProviders = maxScoreProviders.sort((a, b) => a.id - b.id)
+    const slotHash = slotId.split('-').reduce((acc, val) => acc + parseInt(val || 0), 0)
+    const randomIndex = slotHash % sortedTiedProviders.length
+    return sortedTiedProviders[randomIndex].id
+  }
 
   // Run one simulation iteration
   const runSimulationIteration = useCallback(() => {
+    // Prevent overlapping iterations
+    if (simulationInProgressRef.current) {
+      return
+    }
+    
+    simulationInProgressRef.current = true
+    
     // Clear previous iteration's highlights
     setNewlySelectedSlots({})
     
-    setSelectedSlots(prev => {
-      const availableSlots = getAvailableSlotsForState(prev)
+    // Get currently highlighted slots using ACTUAL current state (what's displayed)
+    const getCurrentHighlighted = () => {
+      const highlighted = []
+      timeSlots.forEach((slot) => {
+        const maxScoreProviderId = getMaxScoreProviderForSlot(slot.id)
+        if (maxScoreProviderId !== null) {
+          highlighted.push({
+            slotId: slot.id,
+            providerId: maxScoreProviderId,
+            timeIndex: timeSlots.findIndex(s => s.id === slot.id)
+          })
+        }
+      })
+      return highlighted.sort((a, b) => a.timeIndex - b.timeIndex)
+    }
+
+    // Get initial highlighted slots from current state (what's actually displayed)
+    let highlightedSlots = getCurrentHighlighted()
+    
+    if (highlightedSlots.length === 0) {
+      simulationInProgressRef.current = false
+      return
+    }
+
+    // Select up to 3 slots sequentially, verifying each is highlighted
+    const newlySelected = {}
+    let selectionsMade = 0
+
+    // First selection: from first 20% of earliest highlighted slots
+    if (selectionsMade < 3 && highlightedSlots.length > 0) {
+      const first20Percent = Math.max(1, Math.ceil(highlightedSlots.length * 0.2))
+      const first20Slots = highlightedSlots.slice(0, first20Percent)
+      const randomSlot1 = first20Slots[Math.floor(Math.random() * first20Slots.length)]
       
-      if (availableSlots.length === 0) {
-        return prev
+      // Verify it's actually highlighted before selecting
+      if (getMaxScoreProviderForSlot(randomSlot1.slotId) === randomSlot1.providerId) {
+        setSelectedSlots(prev => {
+          const newState = { ...prev }
+          if (!newState[randomSlot1.providerId]) newState[randomSlot1.providerId] = {}
+          newState[randomSlot1.providerId] = { ...newState[randomSlot1.providerId] }
+          newState[randomSlot1.providerId][randomSlot1.slotId] = true
+          
+          // Track newly selected
+          if (!newlySelected[randomSlot1.providerId]) newlySelected[randomSlot1.providerId] = {}
+          newlySelected[randomSlot1.providerId][randomSlot1.slotId] = true
+          selectionsMade++
+          
+          // After state update, select second slot
+          setTimeout(() => {
+            highlightedSlots = getCurrentHighlighted()
+            
+            // Second selection: from 20-50% range of highlighted slots
+            if (selectionsMade < 3 && highlightedSlots.length > 0) {
+              const start20 = Math.ceil(highlightedSlots.length * 0.2)
+              const end50 = Math.ceil(highlightedSlots.length * 0.5)
+              if (end50 > start20) {
+                const range20to50Slots = highlightedSlots.slice(start20, end50)
+                if (range20to50Slots.length > 0) {
+                  const randomSlot2 = range20to50Slots[Math.floor(Math.random() * range20to50Slots.length)]
+                  
+                  // Verify it's actually highlighted before selecting
+                  if (getMaxScoreProviderForSlot(randomSlot2.slotId) === randomSlot2.providerId) {
+                    setSelectedSlots(prev2 => {
+                      const newState2 = { ...prev2 }
+                      if (!newState2[randomSlot2.providerId]) newState2[randomSlot2.providerId] = {}
+                      newState2[randomSlot2.providerId] = { ...newState2[randomSlot2.providerId] }
+                      newState2[randomSlot2.providerId][randomSlot2.slotId] = true
+                      
+                      // Track newly selected
+                      if (!newlySelected[randomSlot2.providerId]) newlySelected[randomSlot2.providerId] = {}
+                      newlySelected[randomSlot2.providerId][randomSlot2.slotId] = true
+                      selectionsMade++
+                      
+                      // After state update, select third slot
+                      setTimeout(() => {
+                        highlightedSlots = getCurrentHighlighted()
+                        
+                        // Third selection: from 50-70% range of highlighted slots
+                        if (selectionsMade < 3 && highlightedSlots.length > 0) {
+                          const start50 = Math.ceil(highlightedSlots.length * 0.5)
+                          const end70 = Math.ceil(highlightedSlots.length * 0.7)
+                          if (end70 > start50) {
+                            const range50to70Slots = highlightedSlots.slice(start50, end70)
+                            if (range50to70Slots.length > 0) {
+                              const randomSlot3 = range50to70Slots[Math.floor(Math.random() * range50to70Slots.length)]
+                              
+                              // Verify it's actually highlighted before selecting
+                              if (getMaxScoreProviderForSlot(randomSlot3.slotId) === randomSlot3.providerId) {
+                                setSelectedSlots(prev3 => {
+                                  const newState3 = { ...prev3 }
+                                  if (!newState3[randomSlot3.providerId]) newState3[randomSlot3.providerId] = {}
+                                  newState3[randomSlot3.providerId] = { ...newState3[randomSlot3.providerId] }
+                                  newState3[randomSlot3.providerId][randomSlot3.slotId] = true
+                                  
+                                  // Track newly selected
+                                  if (!newlySelected[randomSlot3.providerId]) newlySelected[randomSlot3.providerId] = {}
+                                  newlySelected[randomSlot3.providerId][randomSlot3.slotId] = true
+                                  selectionsMade++
+                                  
+                                  setNewlySelectedSlots(newlySelected)
+                                  simulationInProgressRef.current = false
+                                  return newState3
+                                })
+                              } else {
+                                setNewlySelectedSlots(newlySelected)
+                                simulationInProgressRef.current = false
+                              }
+                            } else {
+                              setNewlySelectedSlots(newlySelected)
+                              simulationInProgressRef.current = false
+                            }
+                          } else {
+                            setNewlySelectedSlots(newlySelected)
+                            simulationInProgressRef.current = false
+                          }
+                        } else {
+                          setNewlySelectedSlots(newlySelected)
+                          simulationInProgressRef.current = false
+                        }
+                      }, 200)
+                      
+                      return newState2
+                    })
+                  } else {
+                    setNewlySelectedSlots(newlySelected)
+                    simulationInProgressRef.current = false
+                  }
+                } else {
+                  setNewlySelectedSlots(newlySelected)
+                  simulationInProgressRef.current = false
+                }
+              } else {
+                setNewlySelectedSlots(newlySelected)
+                simulationInProgressRef.current = false
+              }
+            } else {
+              setNewlySelectedSlots(newlySelected)
+              simulationInProgressRef.current = false
+            }
+          }, 200)
+          
+          return newState
+        })
+      } else {
+        setNewlySelectedSlots(newlySelected)
+        simulationInProgressRef.current = false
       }
-
-      // Create a copy of current state
-      let newState = JSON.parse(JSON.stringify(prev))
-      const newlySelected = {} // Track newly selected slots for this iteration
-
-      // First selection: from first 20% of earliest available slots
-      if (availableSlots.length > 0) {
-        const first20Percent = Math.max(1, Math.ceil(availableSlots.length * 0.2))
-        const first20Slots = availableSlots.slice(0, first20Percent)
-        const randomSlot1 = first20Slots[Math.floor(Math.random() * first20Slots.length)]
-        if (!newState[randomSlot1.providerId]) newState[randomSlot1.providerId] = {}
-        newState[randomSlot1.providerId][randomSlot1.slotId] = true
-        // Track newly selected
-        if (!newlySelected[randomSlot1.providerId]) newlySelected[randomSlot1.providerId] = {}
-        newlySelected[randomSlot1.providerId][randomSlot1.slotId] = true
-      }
-
-      // Recalculate available slots after first selection
-      const availableSlotsAfter1 = getAvailableSlotsForState(newState)
-      
-      // Second selection: from first 40% of earliest available slots
-      if (availableSlotsAfter1.length > 0) {
-        const first40Percent = Math.max(1, Math.ceil(availableSlotsAfter1.length * 0.4))
-        const first40Slots = availableSlotsAfter1.slice(0, first40Percent)
-        const randomSlot2 = first40Slots[Math.floor(Math.random() * first40Slots.length)]
-        if (!newState[randomSlot2.providerId]) newState[randomSlot2.providerId] = {}
-        newState[randomSlot2.providerId][randomSlot2.slotId] = true
-        // Track newly selected
-        if (!newlySelected[randomSlot2.providerId]) newlySelected[randomSlot2.providerId] = {}
-        newlySelected[randomSlot2.providerId][randomSlot2.slotId] = true
-      }
-
-      // Recalculate available slots after second selection
-      const availableSlotsAfter2 = getAvailableSlotsForState(newState)
-      
-      // Third selection: from first 60% of earliest available slots
-      if (availableSlotsAfter2.length > 0) {
-        const first60Percent = Math.max(1, Math.ceil(availableSlotsAfter2.length * 0.6))
-        const first60Slots = availableSlotsAfter2.slice(0, first60Percent)
-        const randomSlot3 = first60Slots[Math.floor(Math.random() * first60Slots.length)]
-        if (!newState[randomSlot3.providerId]) newState[randomSlot3.providerId] = {}
-        newState[randomSlot3.providerId][randomSlot3.slotId] = true
-        // Track newly selected
-        if (!newlySelected[randomSlot3.providerId]) newlySelected[randomSlot3.providerId] = {}
-        newlySelected[randomSlot3.providerId][randomSlot3.slotId] = true
-      }
-
-      // Set newly selected slots for highlighting
+    } else {
       setNewlySelectedSlots(newlySelected)
-
-      return newState
-    })
-  }, [getAvailableSlotsForState])
+      simulationInProgressRef.current = false
+    }
+  }, [timeSlots, getMaxScoreProviderForSlot])
 
   // Check if simulation should stop (all slots selected)
   useEffect(() => {
     if (isPlaying && !isPaused) {
-      const availableSlots = getAvailableSlotsForState(selectedSlots)
-      if (availableSlots.length === 0) {
+      const highlightedSlots = getHighlightedSlots(selectedSlots)
+      if (highlightedSlots.length === 0) {
         setIsPlaying(false)
         setIsPaused(false)
       }
     }
-  }, [selectedSlots, isPlaying, isPaused, getAvailableSlotsForState])
+  }, [selectedSlots, isPlaying, isPaused, getHighlightedSlots])
 
   // Simulation loop
   useEffect(() => {
     if (isPlaying && !isPaused) {
       simulationIntervalRef.current = setInterval(() => {
         runSimulationIteration()
-      }, 1440) // Run every 1440ms (75% slower than original)
+      }, 1440) // Run every 1440ms (50% slower)
     } else {
       if (simulationIntervalRef.current) {
         clearInterval(simulationIntervalRef.current)
@@ -359,7 +527,7 @@ function App() {
                       <td key={slot.id} className="slot-cell">
                         <label
                           className={`slot-checkbox-label ${isSelected ? 'selected' : ''} ${isMaxScore ? 'max-score' : ''} ${!isEnabled ? 'disabled' : ''} ${isNewlySelectedSlot ? 'newly-selected' : ''}`}
-                          title={`Score: ${score.toFixed(3)}${isMaxScore ? ' (Max - Next Available)' : !isEnabled ? ' (Not Available)' : ''}`}
+                          title={`Score: ${formatTruncatedScore(score)}${isMaxScore ? ' (Max - Next Available)' : !isEnabled ? ' (Not Available)' : ''}`}
                         >
                           <input
                             type="checkbox"
@@ -367,7 +535,7 @@ function App() {
                             onChange={() => toggleSlot(provider.id, slot.id)}
                             disabled={!isEnabled}
                           />
-                          <span className="score-indicator">{score.toFixed(2)}</span>
+                          <span className="score-indicator">{formatTruncatedScore(score)}</span>
                         </label>
                       </td>
                     )
