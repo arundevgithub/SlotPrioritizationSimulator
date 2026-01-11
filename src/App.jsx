@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
 // Generate time slots from 10am to 1pm (10-minute intervals)
@@ -39,7 +39,11 @@ const initialProviders = [
 function App() {
   const [providers, setProviders] = useState(initialProviders)
   const [selectedSlots, setSelectedSlots] = useState({}) // { providerId: { slotId: true } }
+  const [newlySelectedSlots, setNewlySelectedSlots] = useState({}) // { providerId: { slotId: true } } - for highlighting
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [isPaused, setIsPaused] = useState(false)
   const timeSlots = useMemo(() => generateTimeSlots(), [])
+  const simulationIntervalRef = useRef(null)
   
   // Sort providers by license count (ascending - fewer licenses first)
   const sortedProviders = useMemo(() => {
@@ -49,6 +53,11 @@ function App() {
   // Check if a slot is selected for a provider
   const isSlotSelected = (providerId, slotId) => {
     return selectedSlots[providerId]?.[slotId] || false
+  }
+
+  // Check if a slot is newly selected in current iteration
+  const isNewlySelected = (providerId, slotId) => {
+    return newlySelectedSlots[providerId]?.[slotId] || false
   }
 
   // Calculate total selected slots for a provider
@@ -65,8 +74,8 @@ function App() {
     const selectedSlotsCount = getTotalSelectedSlots(providerId)
     const slotsRemaining = totalSlots - selectedSlotsCount
     const x = slotsRemaining / totalSlots
-    const exponentialTerm = 0.2 * Math.exp(-1.2 * (licenses - 1))
-    return 0.8 * x + exponentialTerm
+    const exponentialTerm = 0.8 * Math.exp(-1.2 * (licenses - 1))
+    return 0.2 * x + exponentialTerm
   }
 
   // Toggle slot selection for a provider
@@ -123,6 +132,163 @@ function App() {
     return sortedTiedProviders[randomIndex].id
   }
 
+  // Get all available (highlighted) slots sorted by time
+  // This is a helper that calculates available slots given a state snapshot
+  const getAvailableSlotsForState = useCallback((currentSelectedSlots) => {
+    const availableSlots = []
+    timeSlots.forEach((slot) => {
+      // Calculate max score provider for this slot with given state
+      const availableProviders = sortedProviders.filter(provider => 
+        !currentSelectedSlots[provider.id]?.[slot.id]
+      )
+      
+      if (availableProviders.length === 0) return
+      
+      const providerScores = availableProviders.map(provider => {
+        const totalSlots = timeSlots.length
+        const selectedCount = Object.values(currentSelectedSlots[provider.id] || {}).filter(Boolean).length
+        const slotsRemaining = totalSlots - selectedCount
+        const x = slotsRemaining / totalSlots
+        const exponentialTerm = 0.2 * Math.exp(-1.2 * (provider.licenses - 1))
+        const rawScore = 0.8 * x + exponentialTerm
+        const roundedScore = Math.round(rawScore * 100) / 100
+        return { id: provider.id, score: roundedScore }
+      })
+      
+      const maxScore = Math.max(...providerScores.map(p => p.score))
+      const maxScoreProviders = providerScores.filter(p => p.score === maxScore)
+      
+      let selectedProviderId
+      if (maxScoreProviders.length === 1) {
+        selectedProviderId = maxScoreProviders[0].id
+      } else {
+        const sortedTied = maxScoreProviders.sort((a, b) => a.id - b.id)
+        const slotHash = slot.id.split('-').reduce((acc, val) => acc + parseInt(val || 0), 0)
+        selectedProviderId = sortedTied[slotHash % sortedTied.length].id
+      }
+      
+      availableSlots.push({
+        slotId: slot.id,
+        providerId: selectedProviderId,
+        timeIndex: timeSlots.findIndex(s => s.id === slot.id)
+      })
+    })
+    return availableSlots.sort((a, b) => a.timeIndex - b.timeIndex)
+  }, [timeSlots, sortedProviders])
+
+  // Run one simulation iteration
+  const runSimulationIteration = useCallback(() => {
+    // Clear previous iteration's highlights
+    setNewlySelectedSlots({})
+    
+    setSelectedSlots(prev => {
+      const availableSlots = getAvailableSlotsForState(prev)
+      
+      if (availableSlots.length === 0) {
+        return prev
+      }
+
+      // Create a copy of current state
+      let newState = JSON.parse(JSON.stringify(prev))
+      const newlySelected = {} // Track newly selected slots for this iteration
+
+      // First selection: from first 20% of earliest available slots
+      if (availableSlots.length > 0) {
+        const first20Percent = Math.max(1, Math.ceil(availableSlots.length * 0.2))
+        const first20Slots = availableSlots.slice(0, first20Percent)
+        const randomSlot1 = first20Slots[Math.floor(Math.random() * first20Slots.length)]
+        if (!newState[randomSlot1.providerId]) newState[randomSlot1.providerId] = {}
+        newState[randomSlot1.providerId][randomSlot1.slotId] = true
+        // Track newly selected
+        if (!newlySelected[randomSlot1.providerId]) newlySelected[randomSlot1.providerId] = {}
+        newlySelected[randomSlot1.providerId][randomSlot1.slotId] = true
+      }
+
+      // Recalculate available slots after first selection
+      const availableSlotsAfter1 = getAvailableSlotsForState(newState)
+      
+      // Second selection: from first 40% of earliest available slots
+      if (availableSlotsAfter1.length > 0) {
+        const first40Percent = Math.max(1, Math.ceil(availableSlotsAfter1.length * 0.4))
+        const first40Slots = availableSlotsAfter1.slice(0, first40Percent)
+        const randomSlot2 = first40Slots[Math.floor(Math.random() * first40Slots.length)]
+        if (!newState[randomSlot2.providerId]) newState[randomSlot2.providerId] = {}
+        newState[randomSlot2.providerId][randomSlot2.slotId] = true
+        // Track newly selected
+        if (!newlySelected[randomSlot2.providerId]) newlySelected[randomSlot2.providerId] = {}
+        newlySelected[randomSlot2.providerId][randomSlot2.slotId] = true
+      }
+
+      // Recalculate available slots after second selection
+      const availableSlotsAfter2 = getAvailableSlotsForState(newState)
+      
+      // Third selection: from first 60% of earliest available slots
+      if (availableSlotsAfter2.length > 0) {
+        const first60Percent = Math.max(1, Math.ceil(availableSlotsAfter2.length * 0.6))
+        const first60Slots = availableSlotsAfter2.slice(0, first60Percent)
+        const randomSlot3 = first60Slots[Math.floor(Math.random() * first60Slots.length)]
+        if (!newState[randomSlot3.providerId]) newState[randomSlot3.providerId] = {}
+        newState[randomSlot3.providerId][randomSlot3.slotId] = true
+        // Track newly selected
+        if (!newlySelected[randomSlot3.providerId]) newlySelected[randomSlot3.providerId] = {}
+        newlySelected[randomSlot3.providerId][randomSlot3.slotId] = true
+      }
+
+      // Set newly selected slots for highlighting
+      setNewlySelectedSlots(newlySelected)
+
+      return newState
+    })
+  }, [getAvailableSlotsForState])
+
+  // Check if simulation should stop (all slots selected)
+  useEffect(() => {
+    if (isPlaying && !isPaused) {
+      const availableSlots = getAvailableSlotsForState(selectedSlots)
+      if (availableSlots.length === 0) {
+        setIsPlaying(false)
+        setIsPaused(false)
+      }
+    }
+  }, [selectedSlots, isPlaying, isPaused, getAvailableSlotsForState])
+
+  // Simulation loop
+  useEffect(() => {
+    if (isPlaying && !isPaused) {
+      simulationIntervalRef.current = setInterval(() => {
+        runSimulationIteration()
+      }, 1440) // Run every 1440ms (75% slower than original)
+    } else {
+      if (simulationIntervalRef.current) {
+        clearInterval(simulationIntervalRef.current)
+        simulationIntervalRef.current = null
+      }
+    }
+
+    return () => {
+      if (simulationIntervalRef.current) {
+        clearInterval(simulationIntervalRef.current)
+      }
+    }
+  }, [isPlaying, isPaused, runSimulationIteration])
+
+  // Handler functions for buttons
+  const handlePlay = () => {
+    setIsPlaying(true)
+    setIsPaused(false)
+  }
+
+  const handlePause = () => {
+    setIsPaused(true)
+  }
+
+  const handleEnd = () => {
+    setIsPlaying(false)
+    setIsPaused(false)
+    setSelectedSlots({}) // Clear all selections
+    setNewlySelectedSlots({}) // Clear highlighting
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -131,6 +297,28 @@ function App() {
           Availability Score Formula: <strong>y = 0.8x + 0.2e^(-1.2(b-1))</strong><br />
           Where: y = availability score, x = (slots remaining)/(total slots), b = number of licenses
         </p>
+        <div className="simulation-controls">
+          <button 
+            onClick={handlePlay} 
+            disabled={isPlaying && !isPaused}
+            className="sim-button play-button"
+          >
+            ▶ Play
+          </button>
+          <button 
+            onClick={handlePause} 
+            disabled={!isPlaying || isPaused}
+            className="sim-button pause-button"
+          >
+            ⏸ Pause
+          </button>
+          <button 
+            onClick={handleEnd}
+            className="sim-button end-button"
+          >
+            ⏹ End
+          </button>
+        </div>
       </header>
 
       <div className="table-container">
@@ -162,6 +350,7 @@ function App() {
                   </td>
                   {timeSlots.map((slot) => {
                     const isSelected = isSlotSelected(provider.id, slot.id)
+                    const isNewlySelectedSlot = isNewlySelected(provider.id, slot.id)
                     const maxScoreProviderId = getMaxScoreProviderForSlot(slot.id)
                     const isMaxScore = !isSelected && maxScoreProviderId === provider.id
                     const isEnabled = isMaxScore || isSelected // Enable only if max score or already selected
@@ -169,7 +358,7 @@ function App() {
                     return (
                       <td key={slot.id} className="slot-cell">
                         <label
-                          className={`slot-checkbox-label ${isSelected ? 'selected' : ''} ${isMaxScore ? 'max-score' : ''} ${!isEnabled ? 'disabled' : ''}`}
+                          className={`slot-checkbox-label ${isSelected ? 'selected' : ''} ${isMaxScore ? 'max-score' : ''} ${!isEnabled ? 'disabled' : ''} ${isNewlySelectedSlot ? 'newly-selected' : ''}`}
                           title={`Score: ${score.toFixed(3)}${isMaxScore ? ' (Max - Next Available)' : !isEnabled ? ' (Not Available)' : ''}`}
                         >
                           <input
