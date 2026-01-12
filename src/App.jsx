@@ -45,6 +45,10 @@ function App() {
   const [isPaused, setIsPaused] = useState(false)
   const [weight1, setWeight1] = useState(0.8) // Weight for x term
   const [weight2, setWeight2] = useState(0.2) // Weight for exponential term
+  const [simulationSpeedSlider, setSimulationSpeedSlider] = useState(1560) // Slider value (200-2800, where higher = faster)
+  // Convert slider value to interval: interval = 3000 - sliderValue
+  // So slider 200 -> interval 2800 (slow), slider 2800 -> interval 200 (fast)
+  const simulationSpeed = 3000 - simulationSpeedSlider
   const timeSlots = useMemo(() => generateTimeSlots(), [])
   const simulationIntervalRef = useRef(null)
   const simulationInProgressRef = useRef(false)
@@ -487,7 +491,7 @@ function App() {
     if (isPlaying && !isPaused) {
       simulationIntervalRef.current = setInterval(() => {
         runSimulationIteration()
-      }, 1440) // Run every 1440ms (50% slower)
+      }, simulationSpeed) // Use dynamic simulation speed
     } else {
       if (simulationIntervalRef.current) {
         clearInterval(simulationIntervalRef.current)
@@ -500,7 +504,7 @@ function App() {
         clearInterval(simulationIntervalRef.current)
       }
     }
-  }, [isPlaying, isPaused, runSimulationIteration])
+  }, [isPlaying, isPaused, runSimulationIteration, simulationSpeed])
 
   // Handler functions for buttons
   const handlePlay = () => {
@@ -574,6 +578,18 @@ function App() {
             />
             <span>{weight2.toFixed(1)}</span>
           </label>
+          <label className="weight-control">
+            Simulation Speed: 
+            <input
+              type="range"
+              min="200"
+              max="2800"
+              step="100"
+              value={simulationSpeedSlider}
+              onChange={(e) => setSimulationSpeedSlider(parseInt(e.target.value))}
+              disabled={isPlaying && !isPaused}
+            />
+          </label>
         </div>
         <div className="simulation-controls">
           <button 
@@ -595,7 +611,7 @@ function App() {
             className="sim-button end-button"
           >
             ⏹ End
-          </button>
+        </button>
         </div>
       </header>
 
