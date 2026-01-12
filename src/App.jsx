@@ -42,6 +42,8 @@ function App() {
   const [newlySelectedSlots, setNewlySelectedSlots] = useState({}) // { providerId: { slotId: true } } - for highlighting
   const [isPlaying, setIsPlaying] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
+  const [weight1, setWeight1] = useState(0.8) // Weight for x term
+  const [weight2, setWeight2] = useState(0.2) // Weight for exponential term
   const timeSlots = useMemo(() => generateTimeSlots(), [])
   const simulationIntervalRef = useRef(null)
   const simulationInProgressRef = useRef(false)
@@ -77,7 +79,7 @@ function App() {
     return truncated.toFixed(2)
   }
 
-  // Calculate availability score: y = 0.8x + 0.2e^(-1.2(b-1))
+  // Calculate availability score: y = weight1*x + weight2*e^(-1.2(b-1))
   // where x = (slots remaining for a provider) / (total number of slots)
   // b is the number of licenses, and e is Euler's number
   const calculateAvailabilityScore = (providerId, licenses) => {
@@ -86,8 +88,8 @@ function App() {
     const selectedSlotsCount = getTotalSelectedSlots(providerId)
     const slotsRemaining = totalSlots - selectedSlotsCount
     const x = slotsRemaining / totalSlots
-    const exponentialTerm = 0.8 * Math.exp(-1.2 * (licenses - 1))
-    return 0.2 * x + exponentialTerm
+    const exponentialTerm = Math.exp(-1.2 * (licenses - 1))
+    return weight1 * x + weight2 * exponentialTerm
   }
 
   // Toggle slot selection for a provider
@@ -161,8 +163,8 @@ function App() {
         const selectedCount = Object.values(currentSelectedSlots[provider.id] || {}).filter(Boolean).length
         const slotsRemaining = totalSlots - selectedCount
         const x = slotsRemaining / totalSlots
-        const exponentialTerm = 0.2 * Math.exp(-1.2 * (provider.licenses - 1))
-        const rawScore = 0.8 * x + exponentialTerm
+        const exponentialTerm = Math.exp(-1.2 * (provider.licenses - 1))
+        const rawScore = weight1 * x + weight2 * exponentialTerm
         const roundedScore = Math.floor(rawScore * 100) / 100 // Truncate to 2 decimal places (match getMaxScoreProviderForSlot)
         return { id: provider.id, score: roundedScore }
       })
@@ -186,7 +188,7 @@ function App() {
       })
     })
     return highlightedSlots.sort((a, b) => a.timeIndex - b.timeIndex)
-  }, [timeSlots, sortedProviders])
+  }, [timeSlots, sortedProviders, weight1, weight2])
 
   // Helper function to get highlighted slots from current state
   const getCurrentHighlightedSlots = () => {
@@ -208,11 +210,11 @@ function App() {
   const calculateAvailabilityScoreWithState = (providerId, licenses, stateSnapshot) => {
     if (licenses === 0) return Infinity
     const totalSlots = timeSlots.length
-    const selectedCount = Object.values(stateSnapshot[provider.id] || {}).filter(Boolean).length
+    const selectedCount = Object.values(stateSnapshot[providerId] || {}).filter(Boolean).length
     const slotsRemaining = totalSlots - selectedCount
     const x = slotsRemaining / totalSlots
-    const exponentialTerm = 0.2 * Math.exp(-1.2 * (licenses - 1))
-    return 0.8 * x + exponentialTerm
+    const exponentialTerm = Math.exp(-1.2 * (licenses - 1))
+    return weight1 * x + weight2 * exponentialTerm
   }
 
   // Get highlighted provider for a slot with state snapshot (for simulation)
@@ -427,14 +429,61 @@ function App() {
     setNewlySelectedSlots({}) // Clear highlighting
   }
 
+  // Handle weight changes - ensure sum is always 1
+  const handleWeight1Change = (newWeight1) => {
+    const clampedWeight1 = Math.max(0.1, Math.min(0.9, newWeight1))
+    const newWeight2 = 1 - clampedWeight1
+    setWeight1(clampedWeight1)
+    setWeight2(newWeight2)
+    // Reset slots when weights change
+    setSelectedSlots({})
+    setNewlySelectedSlots({})
+  }
+
+  const handleWeight2Change = (newWeight2) => {
+    const clampedWeight2 = Math.max(0.1, Math.min(0.9, newWeight2))
+    const newWeight1 = 1 - clampedWeight2
+    setWeight1(newWeight1)
+    setWeight2(clampedWeight2)
+    // Reset slots when weights change
+    setSelectedSlots({})
+    setNewlySelectedSlots({})
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>Healthcare Provider Slot Prioritization Simulator</h1>
         <p className="equation-info">
-          Availability Score Formula: <strong>y = 0.8x + 0.2e^(-1.2(b-1))</strong><br />
+          Availability Score Formula: <strong>y = {weight1.toFixed(1)}x + {weight2.toFixed(1)}e^(-1.2(b-1))</strong><br />
           Where: y = availability score, x = (slots remaining)/(total slots), b = number of licenses
         </p>
+        <div className="weight-controls">
+          <label className="weight-control">
+            Weight 1 (x term): 
+            <input
+              type="range"
+              min="0.1"
+              max="0.9"
+              step="0.1"
+              value={weight1}
+              onChange={(e) => handleWeight1Change(parseFloat(e.target.value))}
+            />
+            <span>{weight1.toFixed(1)}</span>
+          </label>
+          <label className="weight-control">
+            Weight 2 (e term): 
+            <input
+              type="range"
+              min="0.1"
+              max="0.9"
+              step="0.1"
+              value={weight2}
+              onChange={(e) => handleWeight2Change(parseFloat(e.target.value))}
+            />
+            <span>{weight2.toFixed(1)}</span>
+          </label>
+        </div>
         <div className="simulation-controls">
           <button 
             onClick={handlePlay} 
@@ -464,7 +513,7 @@ function App() {
           <thead>
             <tr>
               <th className="provider-col">Provider</th>
-              <th className="licenses-col"># of states licensed</th>
+              <th className="licenses-col">States licensed</th>
               {timeSlots.map((slot) => (
                 <th key={slot.id} className="time-slot-header">
                   {slot.displayTime}

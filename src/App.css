@@ -24,6 +24,36 @@
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
 }
 
+.weight-controls {
+  display: flex;
+  gap: 30px;
+  justify-content: center;
+  align-items: center;
+  margin: 15px 0;
+  padding: 15px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.weight-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: white;
+  font-size: 0.95rem;
+}
+
+.weight-control input[type="range"] {
+  width: 150px;
+  cursor: pointer;
+}
+
+.weight-control span {
+  min-width: 40px;
+  font-weight: 600;
+  text-align: right;
+}
+
 .equation-info {
   margin: 10px 0;
   font-size: 1rem;
