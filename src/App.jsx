@@ -40,6 +40,7 @@ function App() {
   const [providers, setProviders] = useState(initialProviders)
   const [selectedSlots, setSelectedSlots] = useState({}) // { providerId: { slotId: true } }
   const [newlySelectedSlots, setNewlySelectedSlots] = useState({}) // { providerId: { slotId: true } } - for highlighting
+  const [pendingSelectionSlots, setPendingSelectionSlots] = useState({}) // { providerId: { slotId: true } } - for red border before selection
   const [isPlaying, setIsPlaying] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [weight1, setWeight1] = useState(0.8) // Weight for x term
@@ -61,6 +62,11 @@ function App() {
   // Check if a slot is newly selected in current iteration
   const isNewlySelected = (providerId, slotId) => {
     return newlySelectedSlots[providerId]?.[slotId] || false
+  }
+
+  // Check if a slot is pending selection (will be selected in this iteration)
+  const isPendingSelection = (providerId, slotId) => {
+    return pendingSelectionSlots[providerId]?.[slotId] || false
   }
 
   // Calculate total selected slots for a provider
@@ -260,7 +266,7 @@ function App() {
       }
     })
     return highlighted.sort((a, b) => a.timeIndex - b.timeIndex)
-  }, [timeSlots, getMaxScoreProviderForSlot])
+  }, [timeSlots, sortedProviders, selectedSlots, weight1, weight2])
 
   // Helper to select a random slot from a percentage range
   const selectRandomSlotFromRange = (highlightedSlots, startPercent, endPercent) => {
@@ -335,6 +341,7 @@ function App() {
     
     simulationInProgressRef.current = true
     setNewlySelectedSlots({})
+    setPendingSelectionSlots({}) // Clear previous pending selections
     
     const newlySelected = {}
     let highlightedSlots = getCurrentHighlighted()
@@ -344,42 +351,125 @@ function App() {
       return
     }
 
-    // First selection: from first 10%
-    const slot1 = selectRandomSlotFromFirstPercent(highlightedSlots, 0.1)
+    // Calculate all 3 slots that will be selected in this iteration
+    // First selection: from first 20%
+    const slot1 = selectRandomSlotFromFirstPercent(highlightedSlots, 0.2)
     if (!slot1) {
-      setNewlySelectedSlots(newlySelected)
       simulationInProgressRef.current = false
       return
     }
 
-    applySlotSelection(slot1, newlySelected, () => {
-      highlightedSlots = getCurrentHighlighted()
-      
-      // Second selection: from 20-40% range
-      const slot2 = selectRandomSlotFromRange(highlightedSlots, 0.2, 0.4)
-      if (!slot2) {
-        setNewlySelectedSlots(newlySelected)
-        simulationInProgressRef.current = false
-        return
-      }
+    // Simulate first selection to get updated highlighted slots
+    let workingState = JSON.parse(JSON.stringify(selectedSlots))
+    if (!workingState[slot1.providerId]) workingState[slot1.providerId] = {}
+    workingState[slot1.providerId][slot1.slotId] = true
+    
+    // Get highlighted slots after first selection
+    const highlightedAfter1 = getHighlightedSlots(workingState)
+    
+    // Second selection: from 20-50% range
+    const slot2 = highlightedAfter1.length > 0 
+      ? selectRandomSlotFromRange(highlightedAfter1, 0.2, 0.5)
+      : null
+    
+    if (slot2) {
+      // Simulate second selection
+      if (!workingState[slot2.providerId]) workingState[slot2.providerId] = {}
+      workingState[slot2.providerId][slot2.slotId] = true
+    }
+    
+    // Get highlighted slots after second selection
+    const highlightedAfter2 = slot2 ? getHighlightedSlots(workingState) : []
+    
+    // Third selection: from 50-70% range
+    const slot3 = highlightedAfter2.length > 0
+      ? selectRandomSlotFromRange(highlightedAfter2, 0.5, 0.7)
+      : null
 
-      applySlotSelection(slot2, newlySelected, () => {
+    // Set pending selections to show red border immediately
+    const pending = {}
+    if (slot1) {
+      if (!pending[slot1.providerId]) pending[slot1.providerId] = {}
+      pending[slot1.providerId][slot1.slotId] = true
+    }
+    if (slot2) {
+      if (!pending[slot2.providerId]) pending[slot2.providerId] = {}
+      pending[slot2.providerId][slot2.slotId] = true
+    }
+    if (slot3) {
+      if (!pending[slot3.providerId]) pending[slot3.providerId] = {}
+      pending[slot3.providerId][slot3.slotId] = true
+    }
+    setPendingSelectionSlots(pending)
+
+    // Wait a bit before starting actual selection (delay between identification and selection)
+    setTimeout(() => {
+      // Now select them sequentially with delays
+      if (slot1) {
+        applySlotSelection(slot1, newlySelected, () => {
+        // Remove from pending when actually selected
+        setPendingSelectionSlots(prev => {
+          const updated = { ...prev }
+          if (updated[slot1.providerId]) {
+            updated[slot1.providerId] = { ...updated[slot1.providerId] }
+            delete updated[slot1.providerId][slot1.slotId]
+            if (Object.keys(updated[slot1.providerId]).length === 0) {
+              delete updated[slot1.providerId]
+            }
+          }
+          return updated
+        })
+        
         highlightedSlots = getCurrentHighlighted()
         
-        // Third selection: from 50-70% range
-        const slot3 = selectRandomSlotFromRange(highlightedSlots, 0.5, 0.7)
-        if (slot3) {
-          applySlotSelection(slot3, newlySelected, () => {
-            setNewlySelectedSlots(newlySelected)
-            simulationInProgressRef.current = false
+        if (slot2) {
+          applySlotSelection(slot2, newlySelected, () => {
+            // Remove from pending when actually selected
+            setPendingSelectionSlots(prev => {
+              const updated = { ...prev }
+              if (updated[slot2.providerId]) {
+                updated[slot2.providerId] = { ...updated[slot2.providerId] }
+                delete updated[slot2.providerId][slot2.slotId]
+                if (Object.keys(updated[slot2.providerId]).length === 0) {
+                  delete updated[slot2.providerId]
+                }
+              }
+              return updated
+            })
+            
+            highlightedSlots = getCurrentHighlighted()
+            
+            if (slot3) {
+              applySlotSelection(slot3, newlySelected, () => {
+                // Remove from pending when actually selected
+                setPendingSelectionSlots(prev => {
+                  const updated = { ...prev }
+                  if (updated[slot3.providerId]) {
+                    updated[slot3.providerId] = { ...updated[slot3.providerId] }
+                    delete updated[slot3.providerId][slot3.slotId]
+                    if (Object.keys(updated[slot3.providerId]).length === 0) {
+                      delete updated[slot3.providerId]
+                    }
+                  }
+                  return updated
+                })
+                
+                setNewlySelectedSlots(newlySelected)
+                simulationInProgressRef.current = false
+              })
+            } else {
+              setNewlySelectedSlots(newlySelected)
+              simulationInProgressRef.current = false
+            }
           })
         } else {
           setNewlySelectedSlots(newlySelected)
           simulationInProgressRef.current = false
         }
       })
-    })
-  }, [getCurrentHighlighted, getMaxScoreProviderForSlot])
+      }
+    }, 750) // 750ms delay between showing red border and starting selection
+  }, [getCurrentHighlighted, getMaxScoreProviderForSlot, selectedSlots, getHighlightedSlots])
 
   // Check if simulation should stop (all slots selected)
   useEffect(() => {
@@ -427,6 +517,7 @@ function App() {
     setIsPaused(false)
     setSelectedSlots({}) // Clear all selections
     setNewlySelectedSlots({}) // Clear highlighting
+    setPendingSelectionSlots({}) // Clear pending selections
   }
 
   // Handle weight changes - ensure sum is always 1
@@ -538,6 +629,7 @@ function App() {
                   {timeSlots.map((slot) => {
                     const isSelected = isSlotSelected(provider.id, slot.id)
                     const isNewlySelectedSlot = isNewlySelected(provider.id, slot.id)
+                    const isPendingSelectionSlot = isPendingSelection(provider.id, slot.id)
                     const maxScoreProviderId = getMaxScoreProviderForSlot(slot.id)
                     const isMaxScore = !isSelected && maxScoreProviderId === provider.id
                     const isEnabled = isMaxScore || isSelected // Enable only if max score or already selected
@@ -545,7 +637,7 @@ function App() {
                     return (
                       <td key={slot.id} className="slot-cell">
                         <label
-                          className={`slot-checkbox-label ${isSelected ? 'selected' : ''} ${isMaxScore ? 'max-score' : ''} ${!isEnabled ? 'disabled' : ''} ${isNewlySelectedSlot ? 'newly-selected' : ''}`}
+                          className={`slot-checkbox-label ${isSelected ? 'selected' : ''} ${isMaxScore ? 'max-score' : ''} ${!isEnabled ? 'disabled' : ''} ${isNewlySelectedSlot ? 'newly-selected' : ''} ${isPendingSelectionSlot ? 'pending-selection' : ''}`}
                           title={`Score: ${formatTruncatedScore(score)}${isMaxScore ? ' (Max - Next Available)' : !isEnabled ? ' (Not Available)' : ''}`}
                         >
                           <input

@@ -313,6 +313,21 @@
   color: white;
 }
 
+.slot-checkbox-label.pending-selection {
+  border: 3px solid #ff0000 !important;
+  box-shadow: 0 0 8px rgba(255, 0, 0, 0.6);
+  animation: pending-pulse 1s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(255, 0, 0, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(255, 0, 0, 0.9);
+  }
+}
+
 .slot-checkbox-label.newly-selected {
   border: 3px solid #ff6b35 !important;
   box-shadow: 0 0 0 2px #ff6b35, 0 0 8px rgba(255, 107, 53, 0.6);
